@@ -41,13 +41,15 @@ async function searchUserSounds(rawQuery) {
         // Check if the user is logged in to potentially send auth token if API requires
         // This part depends on how your API handles authentication for search
         // For simplicity, assuming public search or cookie-based auth managed by browser
-        const response = await fetch(apiUrl);
+        const response = await fetch(apiUrl, { credentials: 'include' });
 
         if (!response.ok) {
-            console.error(`API error fetching sound suggestions (${response.status}):`, await response.text());
+            const errorText = await response.text(); // Log the full error text
+            console.error(`API error fetching sound suggestions (${response.status}):`, errorText);
             return [];
         }
         const results = await response.json(); // Assuming API returns JSON array of sound objects
+        console.log("Raw API results for suggestions:", results); // Added for debugging
 
         // Assuming API returns objects like: { username: "user", soundname: "name", description: "desc" }
         if (!Array.isArray(results)) {
@@ -55,12 +57,14 @@ async function searchUserSounds(rawQuery) {
             return [];
         }
 
-        return results.map(sound => ({
-            soundTag: `&${sound.username}.${sound.soundname}`,
-            username: sound.username,
-            soundname: sound.soundname,
-            displayText: `${sound.soundname} by ${sound.username}${sound.description ? ` (${sound.description})` : ''}`
+        const mappedSuggestions = results.map(sound => ({
+            soundTag: `&${sound.user.username}.${sound.name}`, // Adjusted to match API response from app.py for /search
+            username: sound.user.username, // Adjusted
+            soundname: sound.name,          // Adjusted
+            displayText: `${sound.name} by ${sound.user.username}${sound.description ? ` (${sound.description})` : ''}` // Adjusted
         })).slice(0, 10); // Limit to 10 suggestions
+        console.log("Mapped suggestions to be sent to content script:", mappedSuggestions); // Added for debugging
+        return mappedSuggestions;
 
     } catch (error) {
         console.error("Error fetching or processing sound suggestions from API:", error);
@@ -78,7 +82,7 @@ chrome.runtime.onInstalled.addListener(() => {
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === "fetchAmpersoundUrl") {
     const { username, soundname } = request.data;
-    fetch(`${SOCIAL_NETWORK_API_URL}/ampersounds/${username}/${soundname}`)
+    fetch(`${SOCIAL_NETWORK_API_URL}/ampersounds/${username}/${soundname}`, { credentials: 'include' })
       .then(response => {
         if (!response.ok) {
           return response.json().then(errData => {

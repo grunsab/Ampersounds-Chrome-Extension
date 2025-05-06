@@ -13,6 +13,43 @@ let autocompleteDebounceTimer = null;
 const AUTOCOMPLETE_DEBOUNCE_DELAY = 300; // ms
 let activeAudioGlobalForAutocomplete = null; // Separate audio object for autocomplete previews
 
+const EXCLUDED_AUTOCOMPLETE_HOSTNAMES_MAIN = [
+    'google.com',    // Covers www.google.com, google.co.uk, etc.
+    'bing.com',
+    'duckduckgo.com',
+    'baidu.com',
+    'yahoo.com',     // Specifically for search, might need refinement if Yahoo mail etc. is desired
+    'yandex.com',    // Covers yandex.ru too
+    'ecosia.org',
+    'ask.com'
+];
+
+const ALLOWED_EMAIL_HOSTNAMES_FOR_AUTOCOMPLETE = [
+    'mail.google.com',
+    'outlook.live.com',
+    'outlook.office.com',
+    'mail.yahoo.com',
+    'mail.protonmail.com',
+    'app.proton.me', // For Proton web client
+    'mail.zoho.com',
+    'mail.yandex.com' // Yandex Mail
+];
+
+// Helper to check if the current hostname is in the exclusion list or a subdomain of an excluded entry
+function isHostnameExcludedForAutocomplete(hostname, exclusionList) {
+    // First, check if the hostname is an explicitly allowed email client
+    if (ALLOWED_EMAIL_HOSTNAMES_FOR_AUTOCOMPLETE.includes(hostname)) {
+        // console.log(`Ampersound Autocomplete explicitly ALLOWED on: ${hostname}`);
+        return false; // This is an allowed email client, so NOT excluded.
+    }
+    // If not an explicitly allowed email client, then check against the general exclusion list for search engines
+    return exclusionList.some(excludedSite => {
+        // Check if hostname is exactly the excluded site or a subdomain of it
+        // e.g., "google.com" should match "www.google.com" and "news.google.com"
+        return hostname === excludedSite || hostname.endsWith('.' + excludedSite);
+    });
+}
+
 function injectAutocompleteStyles() {
     const styleId = 'ampersound-autocomplete-styles';
     if (document.getElementById(styleId)) return;
@@ -164,9 +201,11 @@ function handleAutocompleteItemMouseOut() {
 }
 
 function updateAutocompleteSuggestions(suggestions, inputElement, query) {
+    console.log('updateAutocompleteSuggestions called with input:', inputElement, 'query:', query); // Added for debugging
     if (!autocompleteUIDiv) createAutocompleteUI();
 
     autocompleteUIDiv.innerHTML = '';
+    console.log('Received suggestions in updateAutocompleteSuggestions:', suggestions); // Added for debugging
 
     if (!suggestions || suggestions.length === 0) {
         hideAutocompleteUI();
@@ -184,6 +223,11 @@ function updateAutocompleteSuggestions(suggestions, inputElement, query) {
         li.dataset.soundname = suggestion.soundname;
         li.dataset.originaltext = suggestion.soundTag;
 
+        li.addEventListener('mousedown', (e) => {
+            console.log('[Ampersound Debug] Autocomplete LI mousedown event (capture phase). Preventing default.');
+            e.preventDefault(); // Prevent focus shift from input
+        }, true); // Use capture for mousedown as well
+
         li.addEventListener('mouseenter', (e) => { // mouseenter is often better than mouseover for this
             // Highlight on hover visually
             const currentlyActive = ul.querySelector('li.active');
@@ -193,8 +237,9 @@ function updateAutocompleteSuggestions(suggestions, inputElement, query) {
         });
         li.addEventListener('mouseleave', handleAutocompleteItemMouseOut);
         li.addEventListener('click', () => {
+            console.log(`[Ampersound Debug] Autocomplete LI clicked (capture phase listener). Suggestion: ${suggestion.soundTag}, Query: ${query}, Input Element:`, inputElement);
             handleAutocompleteSelection(suggestion.soundTag, inputElement, query);
-        });
+        }, true);
         ul.appendChild(li);
     });
 
@@ -217,87 +262,154 @@ async function fetchSoundSuggestionsFromBackground(query) {
         if (response && response.success) {
             return response.suggestions;
         } else {
-            // console.warn("No suggestions received or error:", response ? response.message : "No response");
+            console.warn("No suggestions received or error:", response ? response.message : "No response");
             return [];
         }
     } catch (error) {
-        // console.error("Error sending message for sound suggestions:", error.message);
+        console.error("Error sending message for sound suggestions:", error.message);
         return [];
     }
 }
 
 function handleAutocompleteSelection(soundTag, inputElement, originalQuery) {
+    console.log('[Ampersound Debug] handleAutocompleteSelection called with:');
+    console.log('[Ampersound Debug]   soundTag:', soundTag);
+    console.log('[Ampersound Debug]   inputElement:', inputElement);
+    console.log('[Ampersound Debug]   originalQuery (query that fetched suggestions):', originalQuery);
+    console.log('[Ampersound Debug]   inputElement.isContentEditable:', inputElement.isContentEditable);
+    console.log('[Ampersound Debug]   inputElement.tagName:', inputElement.tagName, 'inputElement.type:', inputElement.type);
+
     let textToInsert = soundTag + " "; // Add a space after insertion
+    const ampersandPrefixRegex = /&([a-zA-Z0-9_]*(?:\.[a-zA-Z0-9_]*)?)?$/;
 
     if (inputElement.isContentEditable) {
+        console.log('[Ampersound Debug] Handling contentEditable element.');
         const selection = window.getSelection();
-        if (!selection.rangeCount) return;
+        if (!selection.rangeCount) {
+            console.warn('[Ampersound Debug] No selection range found for contentEditable.');
+            hideAutocompleteUI();
+            return;
+        }
         let range = selection.getRangeAt(0);
+        console.log('[Ampersound Debug]   Initial range:', range);
 
-        if (!inputElement.contains(range.startContainer)) { // Selection is not in the target input
-             // Try to focus and set cursor at the end
+        if (!inputElement.contains(range.startContainer)) {
+            console.log('[Ampersound Debug]   Selection not in target input. Attempting to focus and set cursor to end.');
             inputElement.focus();
             range = document.createRange();
             range.selectNodeContents(inputElement);
             range.collapse(false); // To the end
             selection.removeAllRanges();
             selection.addRange(range);
+            console.log('[Ampersound Debug]   New range after focus:', range);
         }
 
         const node = range.startContainer;
-        const offset = range.startOffset;
+        const offset = range.startOffset; // Current cursor position within the node
+        console.log('[Ampersound Debug]   Node:', node, 'Offset:', offset, 'Node type:', node.nodeType);
 
         if (node.nodeType === Node.TEXT_NODE) {
-            const textContent = node.nodeValue;
-            const textBeforeOffset = textContent.substring(0, offset);
-            if (textBeforeOffset.endsWith(originalQuery)) {
-                const replacementStartOffset = offset - originalQuery.length;
-                node.nodeValue = textContent.substring(0, replacementStartOffset) + textToInsert + textContent.substring(offset);
-                
-                // Move cursor
-                range.setStart(node, replacementStartOffset + textToInsert.length);
-                range.setEnd(node, replacementStartOffset + textToInsert.length);
+            const textContent = node.nodeValue; // Full text of the current text node
+            const textBeforeCursorInNode = textContent.substring(0, offset); // Text in node up to cursor
+            console.log('[Ampersound Debug]   Text node content:', textContent);
+            console.log('[Ampersound Debug]   Text before cursor in node:', textBeforeCursorInNode);
+
+            const currentTokenMatch = textBeforeCursorInNode.match(ampersandPrefixRegex);
+
+            if (currentTokenMatch) {
+                const prefixToReplace = currentTokenMatch[0];
+                const startIndexInNode = offset - prefixToReplace.length;
+                console.log('[Ampersound Debug]   Found current token to replace:', prefixToReplace, 'at index in node:', startIndexInNode);
+
+                if (startIndexInNode >= 0) {
+                    // Revert to direct node.nodeValue manipulation
+                    node.nodeValue = textContent.substring(0, startIndexInNode) +
+                                     textToInsert +
+                                     textContent.substring(offset); // Appends text that was after the original cursor position
+
+                    // Move cursor to after the inserted text
+                    const newCursorPosInNode = startIndexInNode + textToInsert.length;
+                    range.setStart(node, newCursorPosInNode);
+                    range.setEnd(node, newCursorPosInNode);
+                    selection.removeAllRanges();
+                    selection.addRange(range);
+                    console.log('[Ampersound Debug]   Text node updated directly. New range:', range);
+                } else {
+                    console.warn('[Ampersound Debug]   ContentEditable TextNode: Calculated startIndexInNode is negative. Fallback insert at cursor (current).');
+                    range.collapse(false); // Ensure selection is collapsed at current cursor
+                    selection.removeAllRanges();
+                    selection.addRange(range);
+                    document.execCommand('insertText', false, textToInsert);
+                }
+            } else {
+                console.warn('[Ampersound Debug]   ContentEditable TextNode: No ampersand prefix found before cursor. Inserting at cursor.');
+                range.collapse(false);
                 selection.removeAllRanges();
                 selection.addRange(range);
-            } else { // Fallback if exact prefix not found (e.g. cursor moved)
                 document.execCommand('insertText', false, textToInsert);
             }
-        } else { // Fallback if not directly in a text node
+        } else {
+            console.warn('[Ampersound Debug]   Cursor not directly in a text node for contentEditable. Using execCommand to insert at cursor.');
+            // Ensure selection is collapsed at current cursor to avoid replacing unintended selection
+            range.collapse(false); // Collapse to the end of the current range (cursor position)
+            selection.removeAllRanges();
+            selection.addRange(range);
             document.execCommand('insertText', false, textToInsert);
         }
     } else { // INPUT or TEXTAREA
+        console.log('[Ampersound Debug] Handling INPUT or TEXTAREA element.');
         const text = inputElement.value;
         const cursorPos = inputElement.selectionStart;
         const textBeforeCursor = text.substring(0, cursorPos);
-        
-        let replaceStartIndex = textBeforeCursor.lastIndexOf(originalQuery);
-        if (replaceStartIndex === -1 || textBeforeCursor.substring(replaceStartIndex) !== originalQuery) {
-             // If originalQuery is not exactly at the end of textBeforeCursor,
-             // search for the start of the & token we are replacing
-            replaceStartIndex = textBeforeCursor.match(/&([a-zA-Z0-9_]*\.?[a-zA-Z0-9_]*)?$/)?.index ?? cursorPos - originalQuery.length;
+        console.log('[Ampersound Debug]   Input value:', text);
+        console.log('[Ampersound Debug]   Cursor position:', cursorPos);
+        console.log('[Ampersound Debug]   Text before cursor:', textBeforeCursor);
+
+        const currentTokenMatch = textBeforeCursor.match(ampersandPrefixRegex);
+
+        if (currentTokenMatch) {
+            const prefixToReplace = currentTokenMatch[0];
+            const replaceStartIndex = currentTokenMatch.index; // Index of the start of the prefix
+            console.log('[Ampersound Debug]   Found current token to replace:', prefixToReplace, 'at index:', replaceStartIndex);
+
+            const before = text.substring(0, replaceStartIndex);
+            const after = text.substring(cursorPos); // Text that was after the cursor
+            inputElement.value = before + textToInsert + after;
+            console.log('[Ampersound Debug]   New input value:', inputElement.value);
+
+            const newCursorPos = replaceStartIndex + textToInsert.length;
+            inputElement.selectionStart = newCursorPos;
+            inputElement.selectionEnd = newCursorPos;
+            console.log('[Ampersound Debug]   New cursor position:', newCursorPos);
+        } else {
+            console.warn('[Ampersound Debug]   Input/Textarea: No ampersand prefix found. Inserting text at cursor.');
+            const beforeCursorText = text.substring(0, cursorPos);
+            const afterCursorText = text.substring(cursorPos);
+            inputElement.value = beforeCursorText + textToInsert + afterCursorText;
+
+            const newCursorPos = cursorPos + textToInsert.length;
+            inputElement.selectionStart = newCursorPos;
+            inputElement.selectionEnd = newCursorPos;
+            console.log('[Ampersound Debug]   Input value updated by inserting. New cursor pos:', newCursorPos);
         }
-
-
-        const before = text.substring(0, replaceStartIndex);
-        const after = text.substring(cursorPos);
-        inputElement.value = before + textToInsert + after;
-
-        const newCursorPos = replaceStartIndex + textToInsert.length;
-        inputElement.selectionStart = newCursorPos;
-        inputElement.selectionEnd = newCursorPos;
     }
 
     hideAutocompleteUI();
     if (document.activeElement !== inputElement) {
+      console.log('[Ampersound Debug] Re-focusing input element.');
       inputElement.focus();
     }
-    const inputEvent = new Event('input', { bubbles: true, cancelable: true });
-    inputElement.dispatchEvent(inputEvent);
+    console.log('[Ampersound Debug] Dispatching input event. (Currently commented out for testing)');
+    // const inputEvent = new Event('input', { bubbles: true, cancelable: true });
+    // inputElement.dispatchEvent(inputEvent);
+    console.log('[Ampersound Debug] handleAutocompleteSelection finished.');
 }
 
 
 function handlePotentialAutocomplete(event) {
+    console.log('handlePotentialAutocomplete triggered for event:', event); // Added for debugging
     const inputElement = event.target;
+    currentActiveInputForAutocomplete = inputElement;
     let textValue, cursorPos, textBeforeCursor, currentQuery;
 
     if (inputElement.isContentEditable) {
@@ -330,7 +442,6 @@ function handlePotentialAutocomplete(event) {
     if (match) {
         currentQuery = match[0];
         if (currentQuery === '&' || (currentQuery.length > 1 && currentQuery.length < 30)) { // Min 1 char after &, max length for query
-            currentActiveInputForAutocomplete = inputElement;
             if (!autocompleteUIDiv) createAutocompleteUI();
             // Position will be called by updateAutocompleteSuggestions or immediately if no suggestions found (to hide)
 
@@ -414,6 +525,7 @@ function handleAutocompleteKeyNavigation(event) {
 }
 
 function initializeInputListeners() {
+    console.log("[Ampersound Debug] initializeInputListeners called.");
     console.log("Ampersound Autocomplete Initializing Listeners");
     injectAutocompleteStyles(); // Ensure styles are present
     createAutocompleteUI(); // Create the UI div once
@@ -425,6 +537,13 @@ function initializeInputListeners() {
             target.isContentEditable) {
             
             if (target.closest('.ampersound-autocomplete-ui')) return; // Ignore focus on autocomplete itself
+
+            // Check if on an excluded domain before attaching autocomplete listeners
+            const currentHostname = window.location.hostname;
+            if (isHostnameExcludedForAutocomplete(currentHostname, EXCLUDED_AUTOCOMPLETE_HOSTNAMES_MAIN)) {
+                // console.log(`Ampersound Autocomplete disabled on: ${currentHostname}`);
+                return; // Do not attach autocomplete listeners on this domain
+            }
 
             // Attach if not already attached
             if (!target.dataset.ampersoundAutocompleteInput) {
@@ -464,9 +583,19 @@ function initializeInputListeners() {
 
     // Global click listener to hide autocomplete if clicked outside
     document.addEventListener('click', (event) => {
+        console.log('[Ampersound Debug] Document click event listener (capture phase) INVOKED.');
         if (currentActiveInputForAutocomplete && autocompleteUIDiv && autocompleteUIDiv.style.display === 'block') {
+            console.log('[Ampersound Debug] Global document click CAPTURE listener triggered (passed IF condition).');
+            console.log('[Ampersound Debug]   Event target:', event.target);
+            console.log('[Ampersound Debug]   Is target the autocomplete UI itself?', event.target === autocompleteUIDiv);
+            console.log('[Ampersound Debug]   Does autocomplete UI contain event target?', autocompleteUIDiv.contains(event.target));
+            console.log('[Ampersound Debug]   Is target the active input?', event.target === currentActiveInputForAutocomplete);
+
             if (!autocompleteUIDiv.contains(event.target) && event.target !== currentActiveInputForAutocomplete) {
+                console.log('[Ampersound Debug]   DECISION: Click is OUTSIDE. Hiding Autocomplete UI.');
                 hideAutocompleteUI();
+            } else {
+                console.log('[Ampersound Debug]   DECISION: Click is INSIDE or on INPUT. NOT hiding Autocomplete UI via this listener.');
             }
         }
     }, true); // Use capture to catch clicks early
@@ -731,7 +860,7 @@ async function initAndProcessDOM() {
     } catch (e) {
         // Background script might not be ready on initial load, proceed without username
         currentLoggedInUsernameGlobal = null;
-        // console.warn("Error checking login status in content script (background might not be ready):", e.message);
+        console.warn("Error checking login status in content script (background might not be ready or context invalidated):", e.message);
     }
     // Process the initial DOM
     walkDOM(document.body, processTextNode, currentLoggedInUsernameGlobal);
