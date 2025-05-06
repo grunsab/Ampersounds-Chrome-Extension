@@ -1,5 +1,73 @@
 const SOCIAL_NETWORK_API_URL = 'https://socialnetwork.social'; // Base URL of the social network
 
+// Removed placeholder allSoundsDatabase
+
+async function searchUserSounds(rawQuery) {
+    // rawQuery will be like "&", "&s", "&so", "&user.", "&user.s", etc.
+    let queryPart = rawQuery.startsWith('&') ? rawQuery.substring(1) : rawQuery;
+    let filterUsername = null;
+    let filterSoundnameQuery = queryPart;
+
+    if (queryPart.includes('.')) {
+        const parts = queryPart.split('.', 2);
+        filterUsername = parts[0];
+        filterSoundnameQuery = parts[1] || ""; // If "&user.", query for all sounds by user
+    }
+
+    const searchParams = new URLSearchParams();
+    if (filterUsername) {
+        searchParams.append('username', filterUsername);
+    }
+    if (filterSoundnameQuery) {
+        searchParams.append('q', filterSoundnameQuery);
+    }
+
+    // If the query was just "&" or "&user.", and q would be empty, 
+    // we might want to fetch all or top sounds, or sounds for that user if username is present.
+    // The API design will dictate the best approach here. For now, if q is empty but username is not,
+    // it will search for all sounds by that username. If both are effectively empty, it might fetch all sounds.
+    // If searchParams is empty, it means rawQuery was just "&"
+    if (searchParams.toString() === "" && rawQuery === "&") {
+        // Optionally, you could decide to fetch top/popular sounds by default if query is just "&"
+        // For now, let's assume an empty query to the endpoint fetches all or popular sounds.
+        // Or, return empty if an actual query is required by the API.
+        // searchParams.append('popular', 'true'); // Example if API supports this
+    }
+
+    const apiUrl = `${SOCIAL_NETWORK_API_URL}/api/v1/ampersounds/search?${searchParams.toString()}`;
+    console.log("Searching sounds with URL:", apiUrl); // For debugging
+
+    try {
+        // Check if the user is logged in to potentially send auth token if API requires
+        // This part depends on how your API handles authentication for search
+        // For simplicity, assuming public search or cookie-based auth managed by browser
+        const response = await fetch(apiUrl);
+
+        if (!response.ok) {
+            console.error(`API error fetching sound suggestions (${response.status}):`, await response.text());
+            return [];
+        }
+        const results = await response.json(); // Assuming API returns JSON array of sound objects
+
+        // Assuming API returns objects like: { username: "user", soundname: "name", description: "desc" }
+        if (!Array.isArray(results)) {
+            console.error("API response for sound suggestions is not an array:", results);
+            return [];
+        }
+
+        return results.map(sound => ({
+            soundTag: `&${sound.username}.${sound.soundname}`,
+            username: sound.username,
+            soundname: sound.soundname,
+            displayText: `${sound.soundname} by ${sound.username}${sound.description ? ` (${sound.description})` : ''}`
+        })).slice(0, 10); // Limit to 10 suggestions
+
+    } catch (error) {
+        console.error("Error fetching or processing sound suggestions from API:", error);
+        return [];
+    }
+}
+
 chrome.runtime.onInstalled.addListener(() => {
   console.log('Social Network Ampersound Helper installed.');
   // Perform any first-time setup, like checking login status
@@ -51,6 +119,25 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       }
     });
     return true; // Indicates that the response will be sent asynchronously
+  }
+
+  // New handler for sound suggestions
+  if (request.action === "fetchSoundSuggestions") {
+    (async () => {
+        const rawQuery = request.data.rawQuery;
+        if (typeof rawQuery !== 'string') {
+            sendResponse({ success: false, message: "Invalid query for suggestions." });
+            return;
+        }
+        try {
+            const suggestions = await searchUserSounds(rawQuery);
+            sendResponse({ success: true, suggestions: suggestions });
+        } catch (error) {
+            console.error("Error fetching sound suggestions:", error);
+            sendResponse({ success: false, message: "Error processing suggestion request." });
+        }
+    })();
+    return true; // Required to keep message channel open for async response
   }
 
   // Add other message handlers here if needed

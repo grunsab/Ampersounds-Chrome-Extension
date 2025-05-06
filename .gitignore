@@ -2,7 +2,7 @@
 __pycache__/
 *.py[cod]
 *$py.class
-Social-Network-with-Gemma3-4BB_clone/
+Social-Network-with-Gemma3-4BB/
 # C extensions
 *.so
 
