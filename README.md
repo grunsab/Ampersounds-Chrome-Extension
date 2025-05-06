@@ -1,6 +1,6 @@
 # Lftovr Chrome Extension
 
-This Chrome extension helps you manage your leftover tabs.
+This Chrome extension helps you play leftover sounds.
 
 ## Installation (Developer Mode)
 
