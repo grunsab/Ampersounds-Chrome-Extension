@@ -21,7 +21,8 @@ const EXCLUDED_AUTOCOMPLETE_HOSTNAMES_MAIN = [
     'yahoo.com',     // Specifically for search, might need refinement if Yahoo mail etc. is desired
     'yandex.com',    // Covers yandex.ru too
     'ecosia.org',
-    'ask.com'
+    'ask.com',
+    'socialnetwork.social'
 ];
 
 const ALLOWED_EMAIL_HOSTNAMES_FOR_AUTOCOMPLETE = [
@@ -849,6 +850,14 @@ function walkDOM(node, func, loggedInUser) {
  */
 async function initAndProcessDOM() {
     // console.log("Ampersound DOM Processing Triggered...");
+
+    // Check if on an excluded domain before processing DOM for Ampersound tags
+    const currentHostname = window.location.hostname;
+    if (isHostnameExcludedForAutocomplete(currentHostname, EXCLUDED_AUTOCOMPLETE_HOSTNAMES_MAIN)) {
+        // console.log(`Ampersound DOM processing disabled on excluded host: ${currentHostname}`);
+        return; // Do not process Ampersound tags on this domain
+    }
+
     try {
         // Check login status via background script
         const status = await chrome.runtime.sendMessage({ action: "checkLoginStatus" });
